@@ -596,7 +596,7 @@
       ),
       el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: 'Close', onclick: function () { dialog.close(); } })
     ));
-    dialog.appendChild(el('section', { class: 'detail-section' },
+    var figSection = el('section', { class: 'detail-section' },
       el('h3', { text: 'How the figure is made' }),
       el('div', { class: 'waterfall' },
         waterfallRow('Size curve: 10^(' + MODEL.curve.intercept + ' + ' + MODEL.curve.slope + ' x log10 TVL)', fmtUsd(terms.size)),
@@ -610,8 +610,8 @@
         waterfallRow('80% band (P10-P90)', fmtUsd(row.band80_low_usd) + ' - ' + fmtUsd(row.band80_high_usd)),
         waterfallRow('Rank range over 200 refits', '#' + row.rank_lo + ' - #' + row.rank_hi)
       ),
-      el('p', { class: 'sub', text: 'The page recomputes this row as ' + fmtUsd(terms.implied) + (terms.implied === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' The bands come from the holdout misses: half the tokens the model never saw land inside the 50% band.' })
-    ));
+      el('p', { class: 'sub', text: 'The page recomputes this row as ' + fmtUsd(terms.implied) + (terms.implied === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') })
+    );
     var compRows = row.nearest.map(function (c) {
       return el('tr', null,
         el('td', null, el('b', { text: c.name })),
@@ -621,14 +621,15 @@
         el('td', { class: 'num', text: 'x' + c.tested_miss_x.toFixed(2) })
       );
     });
-    dialog.appendChild(el('section', { class: 'detail-section' },
+    var compSection = el('section', { class: 'detail-section' },
       el('h3', { text: 'Nearest traded comparables' }),
       el('table', { class: 'mini-table' },
         el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Protocol' }), el('th', { scope: 'col', text: 'TVL' }), el('th', { scope: 'col', text: 'Market cap' }), el('th', { scope: 'col', text: 'Curve says' }), el('th', { scope: 'col', text: 'Tested miss' }))),
         el('tbody', null, compRows)
       ),
-      el('p', { class: 'sub', text: 'The three traded tokens closest in size. "Tested miss" is what the market actually paid over what the curve alone would say: the curve is a rough guide, and these three show how rough.' })
-    ));
+      el('p', { class: 'sub', text: 'The three traded tokens closest in size. "Tested miss" is what the market actually paid over what the curve alone would say.' })
+    );
+    dialog.appendChild(el('div', { class: 'detail-grid' }, figSection, compSection));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm arithmetic' }),
       el('div', { class: 'ticket-row' }, el('span', { class: 'sub', text: 'Ticket:' }), ticketBtn(500), ticketBtn(1000), ticketBtn(5000), ticketBtn(10000), el('span', { class: 'verdict ' + plan.verdict, text: plan.verdict })),
@@ -726,7 +727,7 @@
     shell.appendChild(nav());
     shell.appendChild(el('section', { class: 'lede' },
       el('h1', { text: 'Method: the model, its test, and what it gets wrong' }),
-      el('p', { text: 'Everything below is computed from the snapshot by main.ts, not written by hand. The numbers on this page are the same ones the board is built from.' })
+      el('p', { text: 'Everything below is computed from the snapshot by main.ts, not written by hand. The numbers on this page are the same ones the board is built from. At a $1,000 ticket the board\'s verdicts are ' + DATA.verdictCounts.FARM + ' FARM, ' + DATA.verdictCounts.THIN + ' THIN and ' + DATA.verdictCounts.SKIP + ' SKIP.' })
     ));
     shell.appendChild(el('section', { class: 'panel panel-pad' },
       el('h2', { text: 'The formula' }),
