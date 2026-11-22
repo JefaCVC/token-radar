@@ -9,8 +9,8 @@
 // Implied value follows only from the snapshot's own figures, one function for every row:
 //
 //   size      = 10^(a + b * log10(TVL))          fitted on the tokens that already trade
-//   family    = 10^(shrunk category offset)     residual mean per category, shrunk toward 0
-//   carry     = clamp(1 + 0.5 * change_7d/100, 0.8, 1.25)
+//   family    = 10^(shrunk category offset)     MEDIAN residual per category, shrunk toward 0
+//   carry     = clamp(1 + 1.0 * change_7d/100, 0.8, 1.25)
 //   odds      = launch odds from the snapshot's own age curve (share with a token, by age)
 //   kin       = 0.5 when a same-stem name already records a token, else 1
 //   implied   = size * family * carry * odds * kin
@@ -18,6 +18,14 @@
 // The fit is tested, not asserted: leave-one-out and walk-forward holdouts, a term-by-term
 // ablation table, bootstrap rank ranges and bands from the holdout miss distribution. All of
 // it is computed here from the snapshot and shipped to the dashboard, which shows the numbers.
+//
+// Round 2 (radar-comps-2): the offsets take the MEDIAN residual per category (a mean lets one
+// outlier token set a whole category's premium) and shrink harder (n/(n+40)); the growth carry
+// takes the FULL 7-day move, not half. Each change earned its place on both holdouts:
+// LOO x3.13 / walk-forward x2.97, against x3.36 / x3.05 in round 1. Tried and dropped, with the
+// numbers on the Method page: Huber fit, chain breadth, a fitted age term, the #4 seasoning
+// curve, and a quadratic size curve (its walk-forward looked better pooled, x2.71, but it lost
+// leave-one-out and its per-origin misses swung x2.33 to x4.21, so it is not used).
 //
 // No protocol name is ever special-cased. The same function scores every row.
 
@@ -197,7 +205,7 @@ export function fitCurve(comps: SnapshotProtocol[]): SizeCurve {
   return { intercept: round4(intercept), slope: round4(slope), r2: round4(st === 0 ? 0 : 1 - ss / st), n: comps.length };
 }
 
-/** A category's offset: its comparables' mean log residual, shrunk toward zero. */
+/** A category's offset: its comparables' MEDIAN log residual, shrunk toward zero. */
 export interface FamilyOffsets {
   /** category -> log10 offset; categories with too few comparables are absent (offset 0). */
   offsets: Record<string, number>;
@@ -207,10 +215,10 @@ export interface FamilyOffsets {
   minCount: number;
 }
 
-export const OFFSET_SHRINK = 20;
+export const OFFSET_SHRINK = 40;
 export const OFFSET_MIN_COUNT = 3;
 
-/** Family offsets from a fit's residuals: mean residual per category, shrunk by n/(n+shrink). */
+/** Family offsets from a fit's residuals: median residual per category, shrunk by n/(n+shrink). */
 export function fitOffsets(comps: SnapshotProtocol[], curve: SizeCurve, shrink = OFFSET_SHRINK, minCount = OFFSET_MIN_COUNT): FamilyOffsets {
   const byCat = new Map<string, number[]>();
   for (const p of comps) {
@@ -224,17 +232,17 @@ export function fitOffsets(comps: SnapshotProtocol[], curve: SizeCurve, shrink =
   const counts: Record<string, number> = {};
   for (const [cat, rs] of [...byCat.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
     if (rs.length < minCount) continue;
-    const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
-    offsets[cat] = round4((rs.length / (rs.length + shrink)) * mean);
+    const med = median(rs);
+    offsets[cat] = round4((rs.length / (rs.length + shrink)) * med);
     counts[cat] = rs.length;
   }
   return { offsets, counts, shrink, minCount };
 }
 
-/** The 7-day growth carry: half the week's move, bounded so one hot week cannot double a value. */
+/** The 7-day growth carry: the FULL week's move, bounded so one hot week cannot double a value. */
 export function growthCarry(change7d: number | null): number {
   const g = change7d === null || !Number.isFinite(change7d) ? 0 : Math.min(100, Math.max(-50, change7d));
-  return round4(Math.min(1.25, Math.max(0.8, 1 + (g / 100) * 0.5)));
+  return round4(Math.min(1.25, Math.max(0.8, 1 + (g / 100) * 1.0)));
 }
 
 /** One bucket of the empirical launch-odds curve. */
@@ -466,15 +474,44 @@ export interface AblationSpec {
   curve: boolean;
   offsets: boolean;
   growth: boolean;
+  /** A quadratic term in log10(TVL): tried in round 2, dropped (see the ablation note). */
+  quad: boolean;
 }
 
-/** The ablation ladder: flat multiple, then the curve, then offsets, then growth. */
+/** The ablation ladder: flat multiple, then the curve, then offsets, then growth, then the dropped quadratic. */
 export const ABLATION_SPECS: AblationSpec[] = [
-  { label: 'Flat multiple', curve: false, offsets: false, growth: false },
-  { label: 'Size curve', curve: true, offsets: false, growth: false },
-  { label: 'Curve + family offsets', curve: true, offsets: true, growth: false },
-  { label: 'Curve + offsets + growth', curve: true, offsets: true, growth: true },
+  { label: 'Flat multiple', curve: false, offsets: false, growth: false, quad: false },
+  { label: 'Size curve', curve: true, offsets: false, growth: false, quad: false },
+  { label: 'Curve + family offsets', curve: true, offsets: true, growth: false, quad: false },
+  { label: 'Curve + offsets + growth', curve: true, offsets: true, growth: true, quad: false },
+  { label: 'Curve + offsets + growth + quadratic', curve: true, offsets: true, growth: true, quad: true },
 ];
+
+/** Least squares on a small design matrix (Gaussian elimination on the normal equations). */
+function leastSquares(design: number[][], ys: number[]): number[] | null {
+  const k = design[0]!.length;
+  const a: number[][] = Array.from({ length: k }, () => new Array<number>(k).fill(0));
+  const b: number[] = new Array<number>(k).fill(0);
+  for (let i = 0; i < design.length; i++) {
+    for (let r = 0; r < k; r++) {
+      b[r]! += design[i]![r]! * ys[i]!;
+      for (let c = 0; c < k; c++) a[r]![c]! += design[i]![r]! * design[i]![c]!;
+    }
+  }
+  const m = a.map((row, i) => [...row, b[i]!]);
+  for (let c = 0; c < k; c++) {
+    let piv = c;
+    for (let r = c + 1; r < k; r++) if (Math.abs(m[r]![c]!) > Math.abs(m[piv]![c]!)) piv = r;
+    [m[c], m[piv]] = [m[piv]!, m[c]!];
+    if (Math.abs(m[c]![c]!) < 1e-12) return null;
+    for (let r = 0; r < k; r++) {
+      if (r === c) continue;
+      const f = m[r]![c]! / m[c]![c]!;
+      for (let j = c; j <= k; j++) m[r]![j]! -= f * m[c]![j]!;
+    }
+  }
+  return m.map((row, i) => row[k]! / row[i]!);
+}
 
 /** Predict one comparable's log10 market cap under a spec, from a training set's fit. */
 function predictLog(p: SnapshotProtocol, train: SnapshotProtocol[], spec: AblationSpec): number {
@@ -482,11 +519,39 @@ function predictLog(p: SnapshotProtocol, train: SnapshotProtocol[], spec: Ablati
     const ratios = train.map((t) => t.mcap_usd! / t.tvl_usd).sort((a, b) => a - b);
     return LOG10(median(ratios) * p.tvl_usd);
   }
-  const curve = fitCurve(train);
-  let v = curve.intercept + curve.slope * LOG10(p.tvl_usd);
+  // The size curve itself: linear in log10(TVL), or quadratic when the spec asks for it.
+  let curveLog: (t: SnapshotProtocol) => number;
+  if (spec.quad) {
+    const beta = leastSquares(
+      train.map((t) => { const x = LOG10(t.tvl_usd); return [1, x, x * x]; }),
+      train.map((t) => LOG10(t.mcap_usd!)),
+    );
+    if (beta === null) {
+      const curve = fitCurve(train);
+      curveLog = (t: SnapshotProtocol): number => curve.intercept + curve.slope * LOG10(t.tvl_usd);
+    } else {
+      curveLog = (t: SnapshotProtocol): number => { const x = LOG10(t.tvl_usd); return beta[0]! + beta[1]! * x + beta[2]! * x * x; };
+    }
+  } else {
+    const curve = fitCurve(train);
+    curveLog = (t: SnapshotProtocol): number => curve.intercept + curve.slope * LOG10(t.tvl_usd);
+  }
+  let v = curveLog(p);
   if (spec.offsets) {
-    const off = fitOffsets(train, curve);
-    v += off.offsets[p.category ?? 'Other'] ?? 0;
+    // Offsets read off THIS spec's curve residuals: the median residual per category,
+    // shrunk by n/(n+shrink), only where 3+ tokens trade.
+    const byCat = new Map<string, number[]>();
+    for (const t of train) {
+      const r = LOG10(t.mcap_usd!) - curveLog(t);
+      const cat = t.category ?? 'Other';
+      const list = byCat.get(cat) ?? [];
+      list.push(r);
+      byCat.set(cat, list);
+    }
+    const rs = byCat.get(p.category ?? 'Other');
+    if (rs !== undefined && rs.length >= OFFSET_MIN_COUNT) {
+      v += (rs.length / (rs.length + OFFSET_SHRINK)) * median(rs);
+    }
   }
   let val = Math.pow(10, v);
   if (spec.growth) val *= growthCarry(p.change_7d);
@@ -932,7 +997,7 @@ export interface RadarData {
 }
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-comps-1';
+export const MODEL_VERSION = 'radar-comps-2';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -1107,7 +1172,9 @@ function radarRow(row: BoardRow, p: SnapshotProtocol, comps: SnapshotProtocol[],
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
   const model = fitModel(snapshot);
   const comps = comparables(snapshot.protocols);
-  const fullSpec = ABLATION_SPECS[ABLATION_SPECS.length - 1]!;
+  // The shipped model is 'Curve + offsets + growth': the last ablation row is the quadratic
+  // variant, kept only to show it was tried and dropped.
+  const fullSpec = ABLATION_SPECS.find((s) => s.label === 'Curve + offsets + growth')!;
   const loo = looCheck(comps, fullSpec);
   const wf = walkForward(comps, fullSpec);
   const bands = fitBands(loo.signedMissLog);

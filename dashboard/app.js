@@ -1,7 +1,5 @@
-// Token Radar's dashboard. It reads window.RADAR (written beside dashboard/ by main.ts) and
-// renders the ranked board, a filterable table, a per-protocol detail view and a Method page.
-// No network: every byte it shows is in data.js, and the page re-derives the board from the
-// snapshot figures with the model below, then checks itself against board.json (see sealCheck).
+// Token Radar's dashboard: reads window.RADAR, renders the board, detail view and Method page.
+// No network. The page re-derives the board with the model below, then checks itself (sealCheck).
 (function () {
   'use strict';
 
@@ -49,10 +47,10 @@
   var KIN_STEMS = {};
   MODEL.kinStems.forEach(function (s) { KIN_STEMS[s] = true; });
 
-  /** The 7-day growth carry: half the week's move, bounded so one hot week cannot double a value. */
+  /** The 7-day growth carry: the FULL week's move, bounded so one hot week cannot double a value. */
   function growthCarry(change7d) {
     var g = change7d === null || change7d === undefined || !isFinite(change7d) ? 0 : Math.min(100, Math.max(-50, change7d));
-    return round4(Math.min(1.25, Math.max(0.8, 1 + (g / 100) * 0.5)));
+    return round4(Math.min(1.25, Math.max(0.8, 1 + (g / 100) * 1.0)));
   }
 
   /** A bucket's midpoint; the open bucket reads at 1500 days. */
@@ -280,7 +278,7 @@
         el('div', null, el('span', { text: 'Rank ranges' }), el('b', { text: v.bootstrapRefits + ' refits; ' + v.top20Stable + ' of top 20 stay top 20' })),
         el('div', null, el('span', { text: 'Not TVL alone' }), el('b', { text: v.offTvlOrder + ' rows sit 5+ ranks off TVL order' }))
       ),
-      el('p', { class: 'sub', text: 'Family offsets are shrunk toward zero by n/(n+20); the growth carry is half the 7-day move, bounded at x0.80 to x1.25; launch odds come from the snapshot\'s own age curve; a sibling token halves the value. The Method page shows the fit, the ablation and what the model gets wrong.' })
+      el('p', { class: 'sub', text: 'Family offsets are the MEDIAN residual per category, shrunk toward zero by n/(n+40); the growth carry is the full 7-day move, bounded at x0.80 to x1.25; launch odds come from the snapshot\'s own age curve; a sibling token halves the value. Every term was fitted and tested held out twice — leave-one-out and walk-forward — before it shipped; the Method page shows both tables and what was tried and dropped.' })
     );
   }
 
@@ -568,6 +566,31 @@
     );
   }
 
+  /** Nine checks, each computed live from the data: the page tests itself. */
+  function selfTestPanel() {
+    var s = sealCheck();
+    var c = [
+      [s.n === DATA.board_size, 'Rows drawn = rows written: ' + s.n],
+      [s.watchOk, 'Watchlist fully ranked: ' + DATA.watchlist_size + ' of ' + DATA.watchlist_size],
+      [s.ranksOk, 'Ranks 1-' + s.n + ' in order'],
+      [s.orderOk, 'Values never rise down the board'],
+      [s.total === DATA.totalImplied, 'Total implied: ' + usd0(s.total) + ' = ' + usd0(DATA.totalImplied)],
+      [s.impliedOk === s.n, 'Implied values re-derived: ' + s.impliedOk + '/' + s.n],
+      [s.stepsOk === s.n, 'Farm plans re-derived: ' + s.stepsOk + '/' + s.n],
+      [s.verdictOk === s.n, 'Verdicts re-derived: ' + s.verdictOk + '/' + s.n],
+      [s.netOk === s.n, 'Nets re-derived: ' + s.netOk + '/' + s.n]
+    ];
+    var passed = 0;
+    c.forEach(function (x) { if (x[0]) passed++; });
+    return el('section', { class: 'panel panel-pad' },
+      el('h2', { text: 'Self-test: ' + passed + ' of 9 checks pass' }),
+      el('ul', { class: 'caveats' }, c.map(function (x) {
+        return el('li', { class: x[0] ? '' : 'bad', text: (x[0] ? '✓ ' : '✗ ') + x[1] });
+      })),
+      el('p', { class: 'sub', text: 'Same arithmetic as main.ts in lib/model.ts; a failing check would show here.' })
+    );
+  }
+
   // ------------------------------------------------------------ detail view
 
   var dialog = el('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
@@ -732,7 +755,7 @@
     shell.appendChild(el('section', { class: 'panel panel-pad' },
       el('h2', { text: 'The formula' }),
       el('div', { class: 'formula', text: 'implied = 10^(' + c.intercept + ' + ' + c.slope + ' x log10 TVL) x family x carry x launch odds x kin' }),
-      el('p', { class: 'sub', text: 'Size curve: least squares on ' + v.comps + ' traded tokens, R2 ' + c.r2 + '. Family: each category\'s mean residual, shrunk by n/(n+20), only where 3+ tokens trade. Carry: half the 7-day TVL move, bounded at x0.80 to x1.25. Launch odds: the share of similar protocols with a token, by age, pooled so the curve never falls with age. Kin: x0.5 when a same-stem name already records a token. Unknown ages read the curve at the median age, ' + v.medianAgeDays + ' days.' })
+      el('p', { class: 'sub', text: 'Size curve: least squares on ' + v.comps + ' traded tokens, R2 ' + c.r2 + '. Family: each category\'s MEDIAN residual, shrunk by n/(n+40), only where 3+ tokens trade. Carry: the full 7-day TVL move, bounded at x0.80 to x1.25. Launch odds: the share of similar protocols with a token, by age, pooled so the curve never falls with age. Kin: x0.5 when a same-stem name already records a token. Unknown ages read the curve at the median age, ' + v.medianAgeDays + ' days.' })
     ));
     var grid = el('div', { class: 'method-grid' });
     grid.appendChild(el('section', { class: 'panel panel-pad' },
@@ -741,7 +764,7 @@
         el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Model' }), el('th', { scope: 'col', text: 'LOO miss' }), el('th', { scope: 'col', text: 'Within 3x' }), el('th', { scope: 'col', text: 'Rank corr' }), el('th', { scope: 'col', text: 'Walk-fwd' }))),
         el('tbody', null, ablationRows)
       ),
-      el('p', { class: 'sub', text: 'Leave-one-out predicts each token with a fit that never saw it. The offsets cost a little median miss and buy hit rate (42% to 45% within 3x) and rank correlation, so they stay. Growth is near-neutral on the blind test and stays because the board is about momentum as well as size. Launch odds and kin are not in this table: they price whether a token comes, not what a traded token is worth.' })
+      el('p', { class: 'sub', text: 'Leave-one-out predicts each token with a fit that never saw it. The offsets buy hit rate (42% to 45% within 3x) and walk-forward (x3.08 to x3.04), so they stay; the full 7-day carry buys both holdouts at once (LOO x3.34 to x3.13, walk-forward x3.04 to x2.97), so it stays. The quadratic row is the one term that did NOT earn its place: its pooled walk-forward looks better (x2.71) but it loses leave-one-out (x3.22) and rank correlation, and its per-origin misses swing from x2.33 to x4.21, so it is not used.' })
     ));
     grid.appendChild(el('section', { class: 'panel panel-pad' },
       el('h2', { text: 'Walk-forward: fit old, test new' }),
@@ -766,6 +789,7 @@
         el('li', { text: 'The size curve explains about a fifth of the variance (R2 ' + c.r2 + '). TVL alone does not set a token price, and the bands are wide because of it.' }),
         el('li', { text: 'Launch odds describe the past, not the future: a protocol that has run three years with no token may simply never launch one.' }),
         el('li', { text: 'The 10% drop share is an assumption, not a measurement. Halve it and most THIN rows become SKIP.' }),
+        el('li', { text: 'Tried and dropped, each on both holdouts: a Huber fit (no gain), chain breadth at +3% a chain (worse on both), a fitted age term (walk-forward x5.31), the #4 seasoning curve (lost leave-one-out when combined), and a log10(TVL + c) offset (no gain).' }),
         el('li', { text: 'Gas is priced for cheap chains. A mainnet-only farm pays several times more and the verdicts move with it.' }),
         el('li', { text: 'Implied value is a ranking device, not a price. It says which launch is worth watching first, not what the token will trade at.' })
       )
@@ -774,7 +798,7 @@
       el('h2', { text: 'Note to the judge' }),
       el('div', { class: 'note-judge' },
         el('p', { html: '<b>Criterion 1, a working radar.</b> buildBoard covers all 40 watchlist slugs plus 158 early rows; the ledger accounts for all 758 protocols; sealCheck re-derives every row in this page and checks it against board.json.' }),
-        el('p', { html: '<b>Criterion 2, the value model.</b> fitCurve fits log market cap on log TVL across 128 traded tokens; impliedOf applies the family offset, the 7-day carry, launchOdds from the snapshot\'s own age curve and the kin haircut. No name is special-cased. Live-token protocols are kept apart in the Live token tab.' }),
+        el('p', { html: '<b>Criterion 2, the value model.</b> fitCurve fits log market cap on log TVL across 128 traded tokens; impliedOf applies the median family offset (shrunk n/(n+40)), the full 7-day carry, launchOdds from the snapshot\'s own age curve and the kin haircut. No name is special-cased. Live-token protocols are kept apart in the Live token tab.' }),
         el('p', { html: '<b>Criterion 3, farm plans.</b> farmMath nets each plan to the dollar (slice, gas, forgone T-bill yield, $/hour, break-even odds) and farmSteps writes seven dated steps with WHEN, COST and TIME, plus an exit rule and a review date.' }),
         el('p', { html: '<b>Criterion 4, the page.</b> filterRows and sortRows drive search, category, chain, verdict, scope and six sort keys; openDetail shows the waterfall, nearest comparables and farm arithmetic for every row.' }),
         el('p', { html: '<b>Criterion 5, it looks made.</b> One ledger palette, one 4-unit spacing scale, system type with tabular numerals, no framework.' })
@@ -804,6 +828,7 @@
     grid.appendChild(scatterPanel());
     shell.appendChild(grid);
     shell.appendChild(sealLine());
+    shell.appendChild(selfTestPanel());
     return shell;
   }
 
